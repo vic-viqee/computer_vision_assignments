@@ -1,157 +1,175 @@
 import numpy as np
 
 # ==========================================
-# 1. 2D Coordinate Grid Transformations
+# 1. coordinate grid stuff
 # ==========================================
 
-def create_coordinate_grid(height: int, width: int) -> np.ndarray:
-    """
-    Builds a 2D meshgrid of shape (H, W, 2) containing explicit (x, y) coordinates.
-    """
-    y_coords = np.arange(height)
-    x_coords = np.arange(width)
-    grid_x, grid_y = np.meshgrid(x_coords, y_coords)
-    return np.stack([grid_x, grid_y], axis=-1)
+def make_grid(height, width):
+    # makes a grid of x,y coordinates. each cell holds its own (x, y) position
+    y_vals = np.arange(height)
+    x_vals = np.arange(width)
+    gx, gy = np.meshgrid(x_vals, y_vals)
+    grid = np.stack([gx, gy], axis=-1)
+    return grid
 
-def apply_2d_rotation(coords: np.ndarray, angle_degrees: float, center: tuple = None) -> np.ndarray:
-    """
-    Applies a 2D rotation matrix to coordinate grids around a center point without library helpers.
-    """
-    rad = np.radians(angle_degrees)
-    cos_a, sin_a = np.cos(rad), np.sin(rad)
-    
-    # 2D Affine Rotation Matrix
-    R = np.array([
-        [cos_a, -sin_a],
-        [sin_a,  cos_a]
-    ])
-    
+def rotate_grid(coords, angle_deg, center=None):
+    # rotate the whole grid around a center point.
+    # numpy trig functions want radians, degrees need converting first
+    ang = np.radians(angle_deg)
+    c = np.cos(ang)
+    s = np.sin(ang)
+
+    # standard 2d rotation matrix
+    R = np.array([[c, -s], [s, c]])
+
     H, W, _ = coords.shape
     if center is None:
         center = (W / 2.0, H / 2.0)
-        
-    centered = coords - np.array(center)
-    flat_coords = centered.reshape(-1, 2)
-    rotated_flat = flat_coords @ R.T
-    return rotated_flat.reshape(H, W, 2) + np.array(center)
+
+    # step 1: shift everything so the center sits at (0,0)
+    shifted = coords.astype(np.float32) - np.array(center)
+    # step 2: flatten into a list of points so matmul works easily
+    flat = shifted.reshape(-1, 2)
+    # step 3: rotate every point
+    rotated = np.dot(flat, R.T)
+    # step 4: shape back to a grid and move the center back
+    rotated = rotated.reshape(H, W, 2) + np.array(center)
+    return rotated
 
 # ==========================================
-# 2. Pure NumPy Color Space Math
+# 2. color channels
 # ==========================================
 
-def split_rgb_channels(img_rgb: np.ndarray):
-    """
-    Splits an (H, W, 3) RGB image array into discrete R, G, B channel 2D arrays via slicing.
-    """
-    return img_rgb[:, :, 0], img_rgb[:, :, 1], img_rgb[:, :, 2]
+def split_channels(img):
+    # separate red, green, blue into three 2d arrays.
+    # did it with nested loops instead of slicing just to see it going on
+    H, W, _ = img.shape
+    R = np.zeros((H, W), dtype=img.dtype)
+    G = np.zeros((H, W), dtype=img.dtype)
+    B = np.zeros((H, W), dtype=img.dtype)
+    for i in range(H):
+        for j in range(W):
+            R[i, j] = img[i, j, 0]
+            G[i, j] = img[i, j, 1]
+            B[i, j] = img[i, j, 2]
+    return R, G, B
 
-def adjust_contrast_brightness(img: np.ndarray, alpha: float = 1.2, beta: float = 10.0) -> np.ndarray:
-    """
-    Applies linear intensity scaling: Output = alpha * Input + beta clamped to [0, 255].
-    """
-    img_float = img.astype(np.float32)
-    adjusted = np.clip(alpha * img_float + beta, 0, 255)
-    return adjusted.astype(np.uint8)
+def brightness_contrast(img, alpha=1.2, beta=10):
+    # new pixel = alpha * old pixel + beta
+    f = img.astype(np.float32)
+    out = alpha * f + beta
+    out = np.clip(out, 0, 255)      # byte values only go 0..255
+    return out.astype(np.uint8)
 
-def rgb_to_hsv_numpy(img_rgb: np.ndarray) -> np.ndarray:
-    """
-    Converts RGB image arrays to HSV float space using pure NumPy vectorization.
-    Outputs: Hue [0, 360), Saturation [0, 1], Value [0, 1].
-    """
-    norm_img = img_rgb.astype(np.float32) / 255.0
-    R, G, B = norm_img[:, :, 0], norm_img[:, :, 1], norm_img[:, :, 2]
-    
-    c_max = np.max(norm_img, axis=-1)
-    c_min = np.min(norm_img, axis=-1)
-    delta = c_max - c_min
-    
-    # Value (V)
-    V = c_max
-    
-    # Saturation (S)
-    S = np.zeros_like(c_max)
-    mask_max = c_max > 0
-    S[mask_max] = delta[mask_max] / c_max[mask_max]
-    
-    # Hue (H)
-    H = np.zeros_like(c_max)
-    mask_r = (c_max == R) & (delta != 0)
-    H[mask_r] = (60.0 * ((G[mask_r] - B[mask_r]) / delta[mask_r]) + 360.0) % 360.0
-    
-    mask_g = (c_max == G) & (delta != 0)
-    H[mask_g] = 60.0 * ((B[mask_g] - R[mask_g]) / delta[mask_g]) + 120.0
-    
-    mask_b = (c_max == B) & (delta != 0)
-    H[mask_b] = 60.0 * ((R[mask_b] - G[mask_b]) / delta[mask_b]) + 240.0
-    
+def rgb_to_hsv(img):
+    # manual rgb -> hsv. returns hue(0-360), saturation(0-1), value(0-1)
+    norm = img.astype(np.float32) / 255.0
+    R = norm[:, :, 0]
+    G = norm[:, :, 1]
+    B = norm[:, :, 2]
+
+    cmax = np.max(norm, axis=2)
+    cmin = np.min(norm, axis=2)
+    delta = cmax - cmin
+
+    V = cmax
+
+    # saturation is delta / max, but not when max is 0
+    S = np.zeros_like(cmax)
+    mask = cmax > 0
+    S[mask] = delta[mask] / cmax[mask]
+
+    # hue depends on which channel is the biggest
+    H = np.zeros_like(cmax)
+
+    # red biggest
+    red_case = (cmax == R) & (delta != 0)
+    H[red_case] = 60.0 * ((G[red_case] - B[red_case]) / delta[red_case]) + 360.0
+    H[red_case] = np.mod(H[red_case], 360.0)
+
+    # green biggest
+    green_case = (cmax == G) & (delta != 0)
+    H[green_case] = 60.0 * ((B[green_case] - R[green_case]) / delta[green_case]) + 120.0
+
+    # blue biggest
+    blue_case = (cmax == B) & (delta != 0)
+    H[blue_case] = 60.0 * ((R[blue_case] - G[blue_case]) / delta[blue_case]) + 240.0
+
     return np.stack([H, S, V], axis=-1)
 
 # ==========================================
-# 3. Spatial Blurring & 2D Convolution Engine
+# 3. blur / convolution
 # ==========================================
 
-def pad_array_2d(img: np.ndarray, pad_h: int, pad_w: int) -> np.ndarray:
-    """
-    Manually pads 2D or 3D arrays with zeros along outer boundaries.
-    """
+def zero_pad(img, ph, pw):
+    # put zeros around the border so the kernel has something to grab on the edges
+    H, W = img.shape[:2]
     if img.ndim == 2:
-        H, W = img.shape
-        padded = np.zeros((H + 2 * pad_h, W + 2 * pad_w), dtype=np.float32)
-        padded[pad_h:pad_h + H, pad_w:pad_w + W] = img
-    elif img.ndim == 3:
-        H, W, C = img.shape
-        padded = np.zeros((H + 2 * pad_h, W + 2 * pad_w, C), dtype=np.float32)
-        padded[pad_h:pad_h + H, pad_w:pad_w + W, :] = img
+        out = np.zeros((H + 2*ph, W + 2*pw), dtype=np.float32)
+        out[ph:ph+H, pw:pw+W] = img
     else:
-        raise ValueError("Input array must be 2D or 3D.")
-    return padded
+        C = img.shape[2]
+        out = np.zeros((H + 2*ph, W + 2*pw, C), dtype=np.float32)
+        out[ph:ph+H, pw:pw+W, :] = img
+    return out
 
-def convolve2d_numpy(img: np.ndarray, kernel: np.ndarray) -> np.ndarray:
-    """
-    Performs spatial 2D convolution using sliding window views and stride mechanics.
-    """
-    k_h, k_w = kernel.shape
-    pad_h, pad_w = k_h // 2, k_w // 2
-    
-    img_float = img.astype(np.float32)
-    padded = pad_array_2d(img_float, pad_h, pad_w)
-    
+def convolve(img, kernel):
+    # extremely basic convolution, just loops over every pixel
+    # and every kernel cell. slow but it works
+    kh, kw = kernel.shape
+    ph, pw = kh // 2, kw // 2
+    padded = zero_pad(img, ph, pw)
+    H, W = img.shape[:2]
+
     if img.ndim == 2:
-        windows = np.lib.stride_tricks.sliding_window_view(padded, (k_h, k_w))
-        output = np.tensordot(windows, kernel, axes=((2, 3), (0, 1)))
-    elif img.ndim == 3:
-        H, W, C = img.shape
-        output = np.zeros((H, W, C), dtype=np.float32)
-        for c in range(C):
-            windows = np.lib.stride_tricks.sliding_window_view(padded[:, :, c], (k_h, k_w))
-            output[:, :, c] = np.tensordot(windows, kernel, axes=((2, 3), (0, 1)))
-            
-    return np.clip(output, 0, 255).astype(np.uint8)
+        out = np.zeros((H, W), dtype=np.float32)
+        for i in range(H):
+            for j in range(W):
+                total = 0.0
+                for a in range(kh):
+                    for b in range(kw):
+                        total += padded[i + a, j + b] * kernel[a, b]
+                out[i, j] = total
+        return np.clip(out, 0, 255).astype(np.uint8)
 
-def get_gaussian_kernel(size: int = 3, sigma: float = 1.0) -> np.ndarray:
-    """
-    Generates a normalized 2D Gaussian filter kernel.
-    """
+    C = img.shape[2]
+    out = np.zeros((H, W, C), dtype=np.float32)
+    for ch in range(C):
+        for i in range(H):
+            for j in range(W):
+                total = 0.0
+                for a in range(kh):
+                    for b in range(kw):
+                        total += padded[i + a, j + b, ch] * kernel[a, b]
+                out[i, j, ch] = total
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+def gaussian_kernel(size=3, sigma=1.0):
+    # builds a gaussian (bell curve) filter and normalizes it so the
+    # weights all add up to 1 (image brightness stays the same)
     ax = np.linspace(-(size // 2), size // 2, size)
     xx, yy = np.meshgrid(ax, ax)
-    kernel = np.exp(-0.5 * (np.square(xx) + np.square(yy)) / np.square(sigma))
-    return kernel / np.sum(kernel)
+    k = np.exp(-0.5 * (xx**2 + yy**2) / (sigma**2))
+    return k / np.sum(k)
 
 if __name__ == "__main__":
-    print("=== Python Matrix Processor Verification ===")
+    print("=== python processor test ===\n")
+
     np.random.seed(42)
-    sample_img = np.random.randint(0, 256, size=(8, 8, 3), dtype=np.uint8)
-    
-    grid = create_coordinate_grid(8, 8)
-    rotated_grid = apply_2d_rotation(grid, 45)
-    
-    hsv_img = rgb_to_hsv_numpy(sample_img)
-    adjusted = adjust_contrast_brightness(sample_img, alpha=1.2, beta=10)
-    
-    gauss_kernel = get_gaussian_kernel(size=3, sigma=1.0)
-    blurred = convolve2d_numpy(sample_img, gauss_kernel)
-    
-    print(f"Original Shape: {sample_img.shape}")
-    print(f"Rotated Center Coord (4,4): {rotated_grid[4, 4]}")
-    print(f"HSV Converted Pixel (0,0): {hsv_img[0, 0]}")
-    print(f"Blurred Matrix Shape: {blurred.shape}")
+    img = np.random.randint(0, 256, size=(8, 8, 3), dtype=np.uint8)
+
+    grid = make_grid(8, 8)
+    rotated = rotate_grid(grid, 45)
+
+    hsv = rgb_to_hsv(img)
+    adjusted = brightness_contrast(img, alpha=1.2, beta=10)
+
+    kern = gaussian_kernel(size=3, sigma=1.0)
+    blurred = convolve(img, kern)
+
+    print("image shape:", img.shape)
+    # checking that rotation actually moved the corner
+    print("corner before rotation:", grid[0, 0])
+    print("corner after rotation:", rotated[0, 0])
+    print("hsv of top left pixel:", hsv[0, 0])
+    print("blurred shape:", blurred.shape)

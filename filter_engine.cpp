@@ -1,140 +1,139 @@
 #include <iostream>
 #include <vector>
 #include <cstdint>
-#include <cmath>
-#include <type_traits>
-#include <limits>
 #include <algorithm>
+#include <cmath>
+#include <limits>
+#include <type_traits>
 
 // ==========================================
-// 1. Generic Matrix Container Template
+// 1. a simple matrix class to hold pixels
 // ==========================================
+// it is a template so it can store uchar, float, whatever.
+// all the pixels live in one long vector, stored row by row.
 
 template <typename T>
 class Matrix {
-private:
-    size_t rows_;
-    size_t cols_;
-    size_t channels_;
-    std::vector<T> data_;
-
 public:
     Matrix() : rows_(0), cols_(0), channels_(1) {}
-    
-    Matrix(size_t rows, size_t cols, size_t channels = 1, T initial_val = T())
-        : rows_(rows), cols_(cols), channels_(channels), data_(rows * cols * channels, initial_val) {}
+
+    Matrix(size_t rows, size_t cols, size_t channels = 1, T fill = T())
+        : rows_(rows), cols_(cols), channels_(channels),
+          data_(rows * cols * channels, fill) {}
 
     size_t rows() const { return rows_; }
     size_t cols() const { return cols_; }
     size_t channels() const { return channels_; }
     size_t size() const { return data_.size(); }
 
-    const std::vector<T>& data() const { return data_; }
-    std::vector<T>& data() { return data_; }
-
-    // 2D Row-Major Indexing: (y * width + x) * channels
-    T& operator()(size_t r, size_t c) {
-        return data_[(r * cols_ + c) * channels_];
-    }
-
-    const T& operator()(size_t r, size_t c) const {
-        return data_[(r * cols_ + c) * channels_];
-    }
-
+    // pixel (r, c, ch) is stored at position (r * cols + c) * channels + ch
     T& operator()(size_t r, size_t c, size_t ch) {
         return data_[(r * cols_ + c) * channels_ + ch];
     }
-
     const T& operator()(size_t r, size_t c, size_t ch) const {
         return data_[(r * cols_ + c) * channels_ + ch];
     }
 
-    // STL-Compatible Generic Iterators
-    using iterator = typename std::vector<T>::iterator;
-    using const_iterator = typename std::vector<T>::const_iterator;
+    // shortcut for single channel matrices (grayscale)
+    T& operator()(size_t r, size_t c) {
+        return (*this)(r, c, 0);
+    }
+    const T& operator()(size_t r, size_t c) const {
+        return (*this)(r, c, 0);
+    }
 
-    iterator begin() { return data_.begin(); }
-    iterator end() { return data_.end(); }
-    const_iterator begin() const { return data_.begin(); }
-    const_iterator end() const { return data_.end(); }
+    const std::vector<T>& data() const { return data_; }
+    std::vector<T>& data() { return data_; }
+
+private:
+    size_t rows_;
+    size_t cols_;
+    size_t channels_;
+    std::vector<T> data_;
 };
 
 // ==========================================
-// 2. Generic C++ Spatial Filter Engine
+// 2. put the result back into pixel range
 // ==========================================
 
 template <typename T>
-T clamp_pixel(double val) {
-    if constexpr (std::is_integral_v<T>) {
-        double min_val = static_cast<double>(std::numeric_limits<T>::min());
-        double max_val = static_cast<double>(std::numeric_limits<T>::max());
-        return static_cast<T>(std::clamp(val, min_val, max_val));
-    } else {
-        return static_cast<T>(val);
+T clamp_val(double val) {
+    if (std::is_integral<T>::value) {
+        // integer types like uchar only go up to a max, so cut the value down
+        double lo = (double)std::numeric_limits<T>::min();
+        double hi = (double)std::numeric_limits<T>::max();
+        if (val < lo) return (T)lo;
+        if (val > hi) return (T)hi;
+        return (T)val;
     }
+    // floats keep any number, so nothing to clamp
+    return (T)val;
 }
 
-template <typename T, typename K = float>
-Matrix<T> filter2D(const Matrix<T>& src, const Matrix<K>& kernel) {
+// ==========================================
+// 3. the actual filter (convolution)
+// ==========================================
+// it slides the kernel over every pixel and sums up
+// pixel * kernel weight for its little neighborhood
+
+template <typename T>
+Matrix<T> filter2D(const Matrix<T>& src, const Matrix<float>& kernel) {
     size_t rows = src.rows();
     size_t cols = src.cols();
-    size_t channels = src.channels();
-    
-    size_t k_rows = kernel.rows();
-    size_t k_cols = kernel.cols();
-    int pad_r = static_cast<int>(k_rows / 2);
-    int pad_c = static_cast<int>(k_cols / 2);
+    size_t chans = src.channels();
 
-    Matrix<T> dst(rows, cols, channels, T());
+    size_t kh = kernel.rows();
+    size_t kw = kernel.cols();
+    int pad_r = (int)(kh / 2);
+    int pad_c = (int)(kw / 2);
 
-    for (size_t r = 0; r < rows; ++r) {
-        for (size_t c = 0; c < cols; ++c) {
-            for (size_t ch = 0; ch < channels; ++ch) {
-                double accumulator = 0.0;
+    Matrix<T> out(rows, cols, chans, T());
 
-                // Manual Spatial Neighborhood Loop
-                for (size_t kr = 0; kr < k_rows; ++kr) {
-                    for (size_t kc = 0; kc < k_cols; ++kc) {
-                        int in_r = static_cast<int>(r) + static_cast<int>(kr) - pad_r;
-                        int in_c = static_cast<int>(c) + static_cast<int>(kc) - pad_c;
+    for (size_t r = 0; r < rows; r++) {
+        for (size_t c = 0; c < cols; c++) {
+            for (size_t ch = 0; ch < chans; ch++) {
+                double acc = 0.0;
 
-                        // Zero-padding boundary check
-                        if (in_r >= 0 && in_r < static_cast<int>(rows) &&
-                            in_c >= 0 && in_c < static_cast<int>(cols)) {
-                            double pixel_val = static_cast<double>(src(in_r, in_c, ch));
-                            double kernel_val = static_cast<double>(kernel(kr, kc));
-                            accumulator += pixel_val * kernel_val;
+                // go through the kernel window around this pixel
+                for (size_t kr = 0; kr < kh; kr++) {
+                    for (size_t kc = 0; kc < kw; kc++) {
+                        int rr = (int)r + (int)kr - pad_r;
+                        int cc = (int)c + (int)kc - pad_c;
+
+                        // outside the image means zero, so just skip it
+                        if (rr >= 0 && rr < (int)rows && cc >= 0 && cc < (int)cols) {
+                            acc += (double)src(rr, cc, ch) * (double)kernel(kr, kc);
                         }
                     }
                 }
-                dst(r, c, ch) = clamp_pixel<T>(accumulator);
+                out(r, c, ch) = clamp_val<T>(acc);
             }
         }
     }
-    return dst;
+    return out;
 }
 
 int main() {
-    std::cout << "=== C++ Generic Filter Engine Verification ===\n";
+    std::cout << "=== c++ filter engine test ===\n\n";
 
-    // 1. Test Matrix with uint8_t (uchar)
-    Matrix<uint8_t> uchar_img(5, 5, 1, 50);
-    uchar_img(2, 2) = 220; // Center impulse point
+    // 1) test with unsigned char pixels
+    Matrix<unsigned char> img(5, 5, 1, 50);
+    img(2, 2) = 220;                    // one bright pixel in the middle
 
-    Matrix<float> box_kernel(3, 3, 1, 1.0f / 9.0f);
-    Matrix<uint8_t> uchar_out = filter2D(uchar_img, box_kernel);
+    Matrix<float> box(3, 3, 1, 1.0f / 9.0f);   // 3x3 box blur kernel
+    Matrix<unsigned char> uchar_out = filter2D(img, box);
 
-    std::cout << "uchar Image (2,2) before filter: " << static_cast<int>(uchar_img(2, 2)) << "\n";
-    std::cout << "uchar Image (2,2) after box blur: " << static_cast<int>(uchar_out(2, 2)) << "\n\n";
+    std::cout << "uchar center before: " << (int)img(2, 2) << "\n";
+    std::cout << "uchar center after box blur: " << (int)uchar_out(2, 2) << "\n\n";
 
-    // 2. Test Matrix with float
-    Matrix<float> float_img(5, 5, 1, 0.1f);
-    float_img(2, 2) = 1.0f;
+    // 2) test with float pixels
+    Matrix<float> fimg(5, 5, 1, 0.1f);
+    fimg(2, 2) = 1.0f;
 
-    Matrix<float> float_out = filter2D(float_img, box_kernel);
+    Matrix<float> float_out = filter2D(fimg, box);
 
-    std::cout << "float Image (2,2) before filter: " << float_img(2, 2) << "\n";
-    std::cout << "float Image (2,2) after box blur: " << float_out(2, 2) << "\n";
+    std::cout << "float center before: " << fimg(2, 2) << "\n";
+    std::cout << "float center after box blur: " << float_out(2, 2) << "\n";
 
     return 0;
 }
