@@ -1,0 +1,13 @@
+# compiled binaries
+phase1_filter_engine/filter_engine
+phase2_panorama/stitcher
+
+# generated images / outputs
+*.ppm
+*.png
+phase2_panorama/out.*
+
+# python
+__pycache__/
+*.pyc
+.venv/
