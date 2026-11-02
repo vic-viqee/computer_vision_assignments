@@ -1,0 +1,14 @@
+phase 3 object detector - validation results
+
+images: 120
+score threshold: 0.5
+iou threshold: 0.5
+
+true positives: 31
+false positives: 83
+false negatives: 78
+precision: 0.272
+recall: 0.284
+f1: 0.278
+objectness accuracy: 0.908
+mean iou (true positives): 0.592
